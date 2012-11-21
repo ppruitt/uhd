@@ -79,7 +79,7 @@ feedback_select         4[23]       1       divided, fundamental
 ## address 5
 ########################################################################
 ##reserved              5[3:18]     0
-##reserved              5[19:20]    0
+reserved_var            5[19:20]    3
 ##reserved              5[21]       0
 ld_pin_mode             5[22:23]    1       low0, dld, low, high
 ##reserved              5[24:31]    0

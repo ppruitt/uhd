@@ -16,6 +16,7 @@
 //
 
 #include "db_sbx_common.hpp"
+#include <uhd/types/tune_request.hpp>
 
 using namespace uhd;
 using namespace uhd::usrp;
@@ -130,6 +131,7 @@ sbx_xcvr::sbx_xcvr(ctor_args_t args) : xcvr_dboard_base(args){
     else if(get_rx_id() == 0x065) this->get_rx_subtree()->create<std::string>("name").set("SBXv4 RX");
     else this->get_rx_subtree()->create<std::string>("name").set("SBX RX");
 
+    this->get_rx_subtree()->create<device_addr_t>("tune_args").set(device_addr_t());
     this->get_rx_subtree()->create<sensor_value_t>("sensors/lo_locked")
         .publish(boost::bind(&sbx_xcvr::get_locked, this, dboard_iface::UNIT_RX));
     BOOST_FOREACH(const std::string &name, sbx_rx_gain_ranges.keys()){
@@ -139,10 +141,6 @@ sbx_xcvr::sbx_xcvr(ctor_args_t args) : xcvr_dboard_base(args){
         this->get_rx_subtree()->create<meta_range_t>("gains/"+name+"/range")
             .set(sbx_rx_gain_ranges[name]);
     }
-    this->get_rx_subtree()->create<double>("freq/value")
-        .coerce(boost::bind(&sbx_xcvr::set_lo_freq, this, dboard_iface::UNIT_RX, _1))
-        .set((sbx_freq_range.start() + sbx_freq_range.stop())/2.0);
-    this->get_rx_subtree()->create<meta_range_t>("freq/range").set(sbx_freq_range);
     this->get_rx_subtree()->create<std::string>("antenna/value")
         .subscribe(boost::bind(&sbx_xcvr::set_rx_ant, this, _1))
         .set("RX2");
@@ -154,6 +152,14 @@ sbx_xcvr::sbx_xcvr(ctor_args_t args) : xcvr_dboard_base(args){
     this->get_rx_subtree()->create<double>("bandwidth/value").set(2*20.0e6); //20MHz low-pass, we want complex double-sided
     this->get_rx_subtree()->create<meta_range_t>("bandwidth/range")
         .set(freq_range_t(2*20.0e6, 2*20.0e6));
+    this->get_rx_subtree()->create<bool>("mixer_state")
+        .subscribe(boost::bind(&sbx_xcvr::set_mixer_state, this, dboard_iface::UNIT_RX, _1))
+        .set(true);
+    this->get_rx_subtree()->create<double>("sample_rate").set(4e6); //re-set very quickly by multi_usrp
+    this->get_rx_subtree()->create<double>("freq/value")
+        .coerce(boost::bind(&sbx_xcvr::set_lo_freq, this, dboard_iface::UNIT_RX, _1))
+        .set((sbx_freq_range.start() + sbx_freq_range.stop())/2.0);
+    this->get_rx_subtree()->create<meta_range_t>("freq/range").set(sbx_freq_range);
 
     ////////////////////////////////////////////////////////////////////
     // Register TX properties
@@ -162,6 +168,7 @@ sbx_xcvr::sbx_xcvr(ctor_args_t args) : xcvr_dboard_base(args){
     else if(get_tx_id() == 0x067) this->get_tx_subtree()->create<std::string>("name").set("SBXv4 TX");
     else this->get_tx_subtree()->create<std::string>("name").set("SBX TX");
 
+    this->get_tx_subtree()->create<device_addr_t>("tune_args").set(device_addr_t());
     this->get_tx_subtree()->create<sensor_value_t>("sensors/lo_locked")
         .publish(boost::bind(&sbx_xcvr::get_locked, this, dboard_iface::UNIT_TX));
     BOOST_FOREACH(const std::string &name, sbx_tx_gain_ranges.keys()){
@@ -171,10 +178,6 @@ sbx_xcvr::sbx_xcvr(ctor_args_t args) : xcvr_dboard_base(args){
         this->get_tx_subtree()->create<meta_range_t>("gains/"+name+"/range")
             .set(sbx_tx_gain_ranges[name]);
     }
-    this->get_tx_subtree()->create<double>("freq/value")
-        .coerce(boost::bind(&sbx_xcvr::set_lo_freq, this, dboard_iface::UNIT_TX, _1))
-        .set((sbx_freq_range.start() + sbx_freq_range.stop())/2.0);
-    this->get_tx_subtree()->create<meta_range_t>("freq/range").set(sbx_freq_range);
     this->get_tx_subtree()->create<std::string>("antenna/value")
         .subscribe(boost::bind(&sbx_xcvr::set_tx_ant, this, _1))
         .set(sbx_tx_antennas.at(0));
@@ -186,6 +189,14 @@ sbx_xcvr::sbx_xcvr(ctor_args_t args) : xcvr_dboard_base(args){
     this->get_tx_subtree()->create<double>("bandwidth/value").set(2*20.0e6); //20MHz low-pass, we want complex double-sided
     this->get_tx_subtree()->create<meta_range_t>("bandwidth/range")
         .set(freq_range_t(2*20.0e6, 2*20.0e6));
+    this->get_tx_subtree()->create<bool>("mixer_state")
+        .subscribe(boost::bind(&sbx_xcvr::set_mixer_state, this, dboard_iface::UNIT_TX, _1))
+        .set(true);
+    this->get_tx_subtree()->create<double>("sample_rate").set(4e6); //re-set very quickly by multi_usrp
+    this->get_tx_subtree()->create<double>("freq/value")
+        .coerce(boost::bind(&sbx_xcvr::set_lo_freq, this, dboard_iface::UNIT_TX, _1))
+        .set((sbx_freq_range.start() + sbx_freq_range.stop())/2.0);
+    this->get_tx_subtree()->create<meta_range_t>("freq/range").set(sbx_freq_range);
 
     //enable the clocks that we need
     this->get_iface()->set_clock_enabled(dboard_iface::UNIT_TX, true);
@@ -236,7 +247,7 @@ void sbx_xcvr::update_atr(void){
     //set the RX atr regs that change with antenna setting
     this->get_iface()->set_atr_reg(dboard_iface::UNIT_RX, \
             dboard_iface::ATR_REG_RX_ONLY, rx_pga0_iobits | rx_lo_lpf_en \
-            | rx_ld_led | rx_ant_led | RX_POWER_UP | RX_MIXER_ENB \
+            | rx_ld_led | rx_ant_led | RX_POWER_UP | _rx_mixer_state \
             | ((_rx_ant != "RX2")? ANT_TXRX : ANT_RX2));
     this->get_iface()->set_atr_reg(dboard_iface::UNIT_RX, \
             dboard_iface::ATR_REG_TX_ONLY, rx_pga0_iobits | rx_lo_lpf_en \
@@ -244,7 +255,7 @@ void sbx_xcvr::update_atr(void){
             | ((_rx_ant == "CAL")? ANT_TXRX : ANT_RX2));
     this->get_iface()->set_atr_reg(dboard_iface::UNIT_RX, \
             dboard_iface::ATR_REG_FULL_DUPLEX, rx_pga0_iobits | rx_lo_lpf_en \
-            | rx_ld_led | rx_ant_led | RX_POWER_UP | RX_MIXER_ENB \
+            | rx_ld_led | rx_ant_led | RX_POWER_UP | _rx_mixer_state \
             | ((_rx_ant == "CAL")? ANT_TXRX : ANT_RX2));
 
     //set the TX atr regs that change with antenna setting
@@ -254,12 +265,21 @@ void sbx_xcvr::update_atr(void){
             | ((_rx_ant != "RX2")? ANT_RX : ANT_TX));
     this->get_iface()->set_atr_reg(dboard_iface::UNIT_TX, \
             dboard_iface::ATR_REG_TX_ONLY, tx_pga0_iobits | tx_lo_lpf_en \
-            | tx_ld_led | tx_ant_led | TX_POWER_UP | TX_MIXER_ENB \
+            | tx_ld_led | tx_ant_led | TX_POWER_UP | _tx_mixer_state \
             | ((_tx_ant == "CAL")? ANT_RX : ANT_TX));
     this->get_iface()->set_atr_reg(dboard_iface::UNIT_TX, \
             dboard_iface::ATR_REG_FULL_DUPLEX, tx_pga0_iobits | tx_lo_lpf_en \
-            | tx_ld_led | tx_ant_led | TX_POWER_UP | TX_MIXER_ENB \
+            | tx_ld_led | tx_ant_led | TX_POWER_UP | _tx_mixer_state \
             | ((_tx_ant == "CAL")? ANT_RX : ANT_TX));
+}
+
+void sbx_xcvr::set_mixer_state(dboard_iface::unit_t unit, bool mixer_state)
+{
+    if(unit == dboard_iface::UNIT_TX)
+      _tx_mixer_state = mixer_state ? TX_MIXER_ENB : TX_MIXER_DIS;
+    else if(unit == dboard_iface::UNIT_RX)
+      _rx_mixer_state = mixer_state ? RX_MIXER_ENB : TX_MIXER_DIS;
+    update_atr();
 }
 
 void sbx_xcvr::set_rx_ant(const std::string &ant){

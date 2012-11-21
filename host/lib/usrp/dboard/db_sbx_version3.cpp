@@ -18,6 +18,7 @@
 
 #include "adf4350_regs.hpp"
 #include "db_sbx_common.hpp"
+#include <uhd/types/tune_request.hpp>
 
 
 using namespace uhd;
@@ -45,6 +46,62 @@ double sbx_xcvr::sbx_version3::set_lo_freq(dboard_iface::unit_t unit, double tar
         "SBX tune: target frequency %f Mhz"
     ) % (target_freq/1e6) << std::endl;
 
+    /* The below chunk of code parses two arguments out of the tune_args block:
+     *      lo_mode:
+     *          If lo_mode is set to 'on_demand', the user wants to turn off the
+     *          opposite mixer. If 'on_demand' isn't set, the user wants the
+     *          other mixer to remain on, which is the default functionality.
+     *      integer_n:
+     *          If the user set 'mode_n' in the tuning args, the user wishes to
+     *          tune in Integer-N mode, which can result in better spur
+     *          performance on some mixers. The default is fractional tuning. */
+    bool integer_n = false;
+    double sample_rate = 0.0;
+    double baseband_bw = 0.0;
+
+    /* There are some settings that we can only use if both sides (TX, RX) of
+     * the daughterboard have been init'd. This bool gates that decision.*/
+    bool inited = (self_base->get_rx_subtree()->exists("tune_args")) \
+                  && (self_base->get_tx_subtree()->exists("tune_args"));
+
+    if(unit == dboard_iface::UNIT_RX) {
+        if (inited) {
+
+            device_addr_t args = self_base->get_rx_subtree()->access<device_addr_t>("tune_args").get();
+
+            bool on_demand = args.get("lo_mode", "auto") == "on_demand";
+            if(self_base->get_tx_subtree()->access<bool>("mixer_state").get() == on_demand) {
+                UHD_LOGV(often) << boost::format("set_lo_freq: rx_unit with mode %u") % on_demand << std::endl;
+                self_base->get_tx_subtree()->access<bool>("mixer_state").set(!on_demand);
+            }
+
+            integer_n = args.get("mode_n", "fractional") != "fractional";
+            UHD_LOGV(often) << boost::format("set_lo_freq: integer_n with mode %s") % args.get("mode_n", "fractional") << std::endl;
+        }
+
+        sample_rate = self_base->get_rx_subtree()->access<double>("sample_rate").get();
+        baseband_bw = self_base->get_rx_subtree()->access<double>("bandwidth/value").get();
+
+    } else if(unit == dboard_iface::UNIT_TX) {
+        if (inited) {
+
+            device_addr_t args = self_base->get_tx_subtree()->access<device_addr_t>("tune_args").get();
+
+            bool on_demand = args.get("lo_mode", "auto") == "on_demand";
+            if(self_base->get_rx_subtree()->access<bool>("mixer_state").get() == on_demand) {
+                UHD_LOGV(often) << boost::format("set_lo_freq: tx_unit with mode %u") % on_demand << std::endl;
+                self_base->get_rx_subtree()->access<bool>("mixer_state").set(!on_demand);
+            }
+
+            integer_n = args.get("mode_n", "fractional") != "fractional";
+            UHD_LOGV(often) << boost::format("set_lo_freq: integer_n with mode %s") % args.get("mode_n", "fractional") << std::endl;
+
+        }
+
+        sample_rate = self_base->get_tx_subtree()->access<double>("sample_rate").get();
+        baseband_bw = self_base->get_tx_subtree()->access<double>("bandwidth/value").get();
+    }
+
     //clip the input
     target_freq = sbx_freq_range.clip(target_freq);
 
@@ -68,7 +125,7 @@ double sbx_xcvr::sbx_version3::set_lo_freq(dboard_iface::unit_t unit, double tar
     int R=0, BS=0, N=0, FRAC=0, MOD=0;
     int RFdiv = 1;
     adf4350_regs_t::reference_divide_by_2_t T     = adf4350_regs_t::REFERENCE_DIVIDE_BY_2_DISABLED;
-    adf4350_regs_t::reference_doubler_t     D     = adf4350_regs_t::REFERENCE_DOUBLER_DISABLED;    
+    adf4350_regs_t::reference_doubler_t     D     = adf4350_regs_t::REFERENCE_DOUBLER_DISABLED;
 
     //Reference doubler for 50% duty cycle
     // if ref_freq < 12.5MHz enable regs.reference_divide_by_2
@@ -86,7 +143,7 @@ double sbx_xcvr::sbx_version3::set_lo_freq(dboard_iface::unit_t unit, double tar
 
     /*
      * The goal here is to loop though possible R dividers,
-     * band select clock dividers, N (int) dividers, and FRAC 
+     * band select clock dividers, N (int) dividers, and FRAC
      * (frac) dividers.
      *
      * Calculate the N and F dividers for each set of values.
@@ -114,6 +171,14 @@ double sbx_xcvr::sbx_version3::set_lo_freq(dboard_iface::unit_t unit, double tar
         //keep N > minimum int divider requirement
         if (N < prescaler_to_min_int_div[prescaler]) continue;
 
+        /* If we are operating in integer_n mode, then there is a possiblity
+         * that the user could request a frequency which results in a DSP rate
+         * and frequency step size that make spectrum outside of the baseband
+         * filter accessible. The below conditional prevents this. */
+        if (integer_n) {
+            if (((sample_rate / 2) + (ref_freq / R)) >= (baseband_bw / 2)) continue;
+        }
+
         for(BS=1; BS <= 255; BS+=1){
             //keep the band select frequency at or below 100KHz
             //constraint on band select clock
@@ -123,8 +188,13 @@ double sbx_xcvr::sbx_version3::set_lo_freq(dboard_iface::unit_t unit, double tar
     } done_loop:
 
     //Fractional-N calculation
-    MOD = 4095; //max fractional accuracy
-    FRAC = int((target_freq/pfd_freq - N)*MOD);
+    if(integer_n) {
+        MOD = 1;
+        FRAC = 0;
+    } else {
+        MOD = 4095; //max fractional accuracy
+        FRAC = int((target_freq/pfd_freq - N)*MOD);
+    }
 
     //Reference divide-by-2 for 50% duty cycle
     // if R even, move one divide by 2 to to regs.reference_divide_by_2
@@ -138,15 +208,15 @@ double sbx_xcvr::sbx_version3::set_lo_freq(dboard_iface::unit_t unit, double tar
 
     UHD_LOGV(often)
         << boost::format("SBX Intermediates: ref=%0.2f, outdiv=%f, fbdiv=%f") % (ref_freq*(1+int(D))/(R*(1+int(T)))) % double(RFdiv*2) % double(N + double(FRAC)/double(MOD)) << std::endl
-        << boost::format("SBX tune: R=%d, BS=%d, N=%d, FRAC=%d, MOD=%d, T=%d, D=%d, RFdiv=%d"
-            ) % R % BS % N % FRAC % MOD % T % D % RFdiv << std::endl
+        << boost::format("SBX tune: R=%d, BS=%d, N=%d, FRAC=%d, MOD=%d, T=%d, D=%d, RFdiv=%d, Int-N=%d"
+            ) % R % BS % N % FRAC % MOD % T % D % RFdiv % integer_n << std::endl
         << boost::format("SBX Frequencies (MHz): REQ=%0.2f, ACT=%0.2f, VCO=%0.2f, PFD=%0.2f, BAND=%0.2f"
             ) % (target_freq/1e6) % (actual_freq/1e6) % (vco_freq/1e6) % (pfd_freq/1e6) % (pfd_freq/BS/1e6) << std::endl;
 
     //load the register values
     adf4350_regs_t regs;
 
-    if ((unit == dboard_iface::UNIT_TX) and (actual_freq == sbx_tx_lo_2dbm.clip(actual_freq))) 
+    if ((unit == dboard_iface::UNIT_TX) and (actual_freq == sbx_tx_lo_2dbm.clip(actual_freq)))
         regs.output_power = adf4350_regs_t::OUTPUT_POWER_2DBM;
     else
         regs.output_power = adf4350_regs_t::OUTPUT_POWER_5DBM;
@@ -154,6 +224,9 @@ double sbx_xcvr::sbx_version3::set_lo_freq(dboard_iface::unit_t unit, double tar
     regs.frac_12_bit = FRAC;
     regs.int_16_bit = N;
     regs.mod_12_bit = MOD;
+
+    regs.ldf = integer_n ? adf4350_regs_t::LDF_INT_N : adf4350_regs_t::LDF_FRAC_N;
+
     regs.clock_divider_12_bit = std::max(1, int(std::ceil(400e-6*pfd_freq/MOD)));
     regs.feedback_select = adf4350_regs_t::FEEDBACK_SELECT_DIVIDED;
     regs.clock_div_mode = adf4350_regs_t::CLOCK_DIV_MODE_RESYNC_ENABLE;

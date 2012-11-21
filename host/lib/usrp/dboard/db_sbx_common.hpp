@@ -137,11 +137,13 @@ protected:
 
     uhd::dict<std::string, double> _tx_gains, _rx_gains;
     double       _rx_lo_freq, _tx_lo_freq;
+    int _rx_mixer_state, _tx_mixer_state;
     std::string  _tx_ant, _rx_ant;
     bool _rx_lo_lock_cache, _tx_lo_lock_cache;
 
     void set_rx_ant(const std::string &ant);
     void set_tx_ant(const std::string &ant);
+    void set_mixer_state(dboard_iface::unit_t unit, bool mixer_state);
     double set_rx_gain(double gain, const std::string &name);
     double set_tx_gain(double gain, const std::string &name);
 
