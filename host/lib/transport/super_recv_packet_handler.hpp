@@ -95,7 +95,7 @@ public:
         _task_barrier_exit.resize(size);
         _task_handlers.resize(size);
         for (size_t i = 1/*skip 0*/; i < size; i++){
-            _task_handlers[i] = task::make(boost::bind(&recv_packet_handler::converter_thread_task, this, i));
+            //_task_handlers[i] = task::make(boost::bind(&recv_packet_handler::converter_thread_task, this, i));
         };
     }
 
@@ -541,7 +541,7 @@ private:
         _convert_bytes_to_copy = bytes_to_copy;
 
         //perform N channels of conversion
-        converter_thread_task(0);
+        for (size_t i = 0; i < _props.size(); i++) converter_thread_task(i);
 
         //update the copy buffer's availability
         info.data_bytes_to_copy -= bytes_to_copy;
@@ -561,7 +561,7 @@ private:
      ******************************************************************/
     UHD_INLINE void converter_thread_task(const size_t index)
     {
-        _task_barrier_entry.wait();
+        //_task_barrier_entry.wait();
 
         //shortcut references to local data structures
         buffers_info_type &buff_info = get_curr_buffer_info();
@@ -587,7 +587,7 @@ private:
             info.buff.reset(); //effectively a release
         }
 
-        _task_barrier_exit.wait();
+        //_task_barrier_exit.wait();
     }
 
     //! Shared variables for the worker threads
