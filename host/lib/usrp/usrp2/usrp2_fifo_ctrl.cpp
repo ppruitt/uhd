@@ -212,6 +212,7 @@ private:
         while (wraparound_lt16(_seq_ack, seq_to_ack)){
             managed_recv_buffer::sptr buff = _xport->get_recv_buff(_timeout);
             if (not buff){
+                _seq_ack = seq_to_ack; //allows for recovery
                 throw uhd::runtime_error("fifo ctrl timed out looking for acks");
             }
             const boost::uint32_t *pkt = buff->cast<const boost::uint32_t *>();
